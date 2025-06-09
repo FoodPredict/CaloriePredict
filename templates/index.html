@@ -1,1 +1,145 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meal Calorie Analyzer</title>
+    <style>
+        body { font-family: sans-serif; }
+        .meal-item { margin-bottom: 10px; border: 1px solid #ccc; padding: 10px; }
+        .result { margin-top: 20px; border-top: 1px solid #eee; padding-top: 20px; }
+        .result p { margin: 5px 0; }
+    </style>
+</head>
+<body>
+    <h1>Analyze Your Meal Calories</h1>
 
+    <div id="meal-items-container">
+        <h2>Add Meal Items</h2>
+        <div class="meal-item">
+            <label for="food-item-0">Food Item:</label>
+            <input type="text" class="food-item-input" list="food-items-list" id="food-item-0">
+            <datalist id="food-items-list">
+                {% for item in food_items %}
+                <option value="{{ item }}">
+                {% endfor %}
+            </datalist>
+            <label for="quantity-0">Quantity (grams):</label>
+            <input type="number" class="quantity-input" id="quantity-0" value="0" min="0">
+        </div>
+    </div>
+    <button onclick="addMealItem()">Add Another Item</button>
+    <button onclick="analyzeMeal()">Analyze Meal</button>
+
+    <div class="result" id="analysis-results">
+        <h2>Analysis Results</h2>
+        <!-- Results will be displayed here by JavaScript -->
+    </div>
+
+    <script>
+        let itemIndex = 0;
+
+        function addMealItem() {
+            itemIndex++;
+            const container = document.getElementById('meal-items-container');
+            const newItemDiv = document.createElement('div');
+            newItemDiv.classList.add('meal-item');
+            newItemDiv.innerHTML = `
+                <label for="food-item-${itemIndex}">Food Item:</label>
+                <input type="text" class="food-item-input" list="food-items-list" id="food-item-${itemIndex}">
+                <datalist id="food-items-list">
+                    {% for item in food_items %}
+                    <option value="{{ item }}">
+                    {% endfor %}
+                </datalist>
+                <label for="quantity-${itemIndex}">Quantity (grams):</label>
+                <input type="number" class="quantity-input" id="quantity-${itemIndex}" value="0" min="0">
+            `;
+            container.appendChild(newItemDiv);
+        }
+
+        async function analyzeMeal() {
+            const mealItems = [];
+            const itemDivs = document.querySelectorAll('#meal-items-container .meal-item');
+
+            itemDivs.forEach(itemDiv => {
+                const foodItemInput = itemDiv.querySelector('.food-item-input');
+                const quantityInput = itemDiv.querySelector('.quantity-input');
+
+                const foodItem = foodItemInput.value.trim();
+                const quantity = parseFloat(quantityInput.value);
+
+                if (foodItem && quantity > 0) {
+                    mealItems.push({
+                        food_item: foodItem,
+                        quantity: quantity
+                    });
+                }
+            });
+
+            const resultsDiv = document.getElementById('analysis-results');
+            resultsDiv.innerHTML = '<h2>Analysis Results</h2><p>Calculating...</p>'; // Loading state
+
+            try {
+                const response = await fetch('/analyze', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ meal_items: mealItems })
+                });
+
+                if (!response.ok) {
+                     throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const results = await response.json();
+
+                // Display results (you can format this more nicely)
+                resultsDiv.innerHTML = '<h2>Analysis Results</h2>';
+                if (results.error) {
+                    resultsDiv.innerHTML += `<p style="color: red;">Error: ${results.error}</p>`;
+                } else if (Object.keys(results).length === 0) {
+                     resultsDiv.innerHTML += '<p>No valid items were analyzed.</p>';
+                }
+                else {
+                    resultsDiv.innerHTML += `<p><strong>(i) Sum of Calories per 100g for Selected Food Items:</strong> ${results.total_calories_in_selected_food_items_per_100g_sum?.toFixed(2) || 'N/A'} kcal/100g (Sum)</p>`;
+                    resultsDiv.innerHTML += `<p><strong>(ii) Total Calories for the Meal (based on quantity):</strong> ${results.total_calories?.toFixed(2) || 'N/A'} kcal</p>`;
+
+                    resultsDiv.innerHTML += '<p><strong>Summary Statistics for Selected Food Items (Calories per 100g):</strong></p>';
+                    resultsDiv.innerHTML += `<p>&nbsp;&nbsp;(iii) Average Calories: ${results.average_calories_per_100g?.toFixed(2) || 'N/A'} kcal/100g</p>`;
+                    resultsDiv.innerHTML += `<p>&nbsp;&nbsp;(iv) Median Calories: ${results.median_calories_per_100g?.toFixed(2) || 'N/A'} kcal/100g</p>`;
+                     resultsDiv.innerHTML += `<p>&nbsp;&nbsp;(v) Min. Calories: ${results.min_calories_per_100g?.toFixed(2) || 'N/A'} kcal/100g</p>`;
+                    resultsDiv.innerHTML += `<p>&nbsp;&nbsp;(vi) Maximum Calories: ${results.max_calories_per_100g?.toFixed(2) || 'N/A'} kcal/100g</p>`;
+                     resultsDiv.innerHTML += `<p>&nbsp;&nbsp;(vii) Standard Deviation: ${results.std_deviation_calories_per_100g?.toFixed(2) || 'N/A'}</p>`;
+
+
+                    resultsDiv.innerHTML += '<p><strong>(viii) Highest Calorie Foods (among selected items, per 100g):</strong></p>';
+                    if (results.highest_calorie_foods_in_selection && results.highest_calorie_foods_in_selection.length > 0) {
+                         results.highest_calorie_foods_in_selection.forEach(food => {
+                            resultsDiv.innerHTML += `<p>&nbsp;&nbsp;- ${food.food_item}: ${food.calories_per_100g?.toFixed(2) || 'N/A'} kcal/100g</p>`;
+                        });
+                    } else {
+                         resultsDiv.innerHTML += '<p>&nbsp;&nbsp;None</p>';
+                    }
+
+                    resultsDiv.innerHTML += '<p><strong>(ix) Lowest Calorie Foods (among selected items, per 100g):</strong></p>';
+                     if (results.lowest_calorie_foods_in_selection && results.lowest_calorie_foods_in_selection.length > 0) {
+                         results.lowest_calorie_foods_in_selection.forEach(food => {
+                            resultsDiv.innerHTML += `<p>&nbsp;&nbsp;- ${food.food_item}: ${food.calories_per_100g?.toFixed(2) || 'N/A'} kcal/100g</p>`;
+                        });
+                    } else {
+                         resultsDiv.innerHTML += '<p>&nbsp;&nbsp;None</p>';
+                    }
+
+                }
+
+            } catch (error) {
+                console.error('Error:', error);
+                resultsDiv.innerHTML = '<h2>Analysis Results</h2><p style="color: red;">An error occurred during analysis. Please try again.</p>';
+            }
+        }
+    </script>
+</body>
+</html>
