@@ -2,7 +2,7 @@
 # The code below is correct for running a Flask web server.
 # When you execute this file (e.g., using 'python app.py' in the terminal),
 # it will start the server and continue running until manually stopped (e.g., with Ctrl+C).
-# Access the web interface by opening a browser to http://127.0.0.1:5000.
+# Access the web interface by opening a browser to http://127.0.0.1:5002.
 
 from flask import Flask, render_template, request, jsonify
 import pandas as pd
