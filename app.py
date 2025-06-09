@@ -1,275 +1,153 @@
-# Glycemic Load Data/app.py
+# app.py
+# The code below is correct for running a Flask web server.
+# When you execute this file (e.g., using 'python app.py' in the terminal),
+# it will start the server and continue running until manually stopped (e.g., with Ctrl+C).
+# Access the web interface by opening a browser to http://127.0.0.1:5000.
+
 from flask import Flask, render_template, request, jsonify
 import pandas as pd
-import math
-import os # Import the os module
+import numpy as np
+import os # Import os for checking file existence
 
 app = Flask(__name__)
 
-# Get the directory of the current script
-# basedir = os.path.abspath(os.path.dirname(__file__)) # __file__ is not defined in Jupyter notebooks
-# Assuming the CSV is in the current working directory or a known relative path for notebook testing
-csv_file_name = "GL GI Prediction Dataset.csv"
-# Construct the path. For local testing in Jupyter, current directory is often sufficient.
-# If running as a script (app.py), the original basedir method is correct.
-# For demonstration in notebook, let's assume CSV is in the current directory or the same as the notebook.
-# We'll just use the file name directly, assuming it's in the current working directory.
-# If you need to specify a directory relative to the notebook, adjust this.
-csv_path = csv_file_name # Simple path for notebook execution
+# --- Data Loading ---
+# Load your calorie data, reading only the required columns
+file_name = 'Calorie List.csv' # Make sure this matches your uploaded file name
+required_columns = ['Food Item', 'Calories in kcal per 100g']
+calorie_data = pd.DataFrame() # Initialize empty DataFrame
 
-# Load the data into a Pandas DataFrame when the application starts
-# Use the determined path to the CSV file
-try:
-    # Try reading with latin-1 first
+print(f"Attempting to load data from '{file_name}'...")
+
+if not os.path.exists(file_name):
+    print(f"Error: The file '{file_name}' does not exist.")
+else:
     try:
-        df = pd.read_csv(csv_path, encoding='latin-1')
-        print("CSV data loaded successfully with 'latin-1' encoding!")
+        calorie_data = pd.read_csv(file_name, usecols=required_columns)
+        calorie_data = calorie_data.rename(columns={
+            'Food Item': 'food_item',
+            'Calories in kcal per 100g': 'calories_per_100g'
+            })
+        # Calculate calories per gram only if calories_per_100g column exists
+        if 'calories_per_100g' in calorie_data.columns:
+             calorie_data['calories_per_g'] = calorie_data['calories_per_100g'] / 100
+        print("Calorie data loaded successfully.")
+    except KeyError as e:
+        calorie_data = pd.DataFrame() # Reset to empty if columns are missing
+        print(f"Error: Missing expected column in '{file_name}': {e}.")
+        print("Please check that the column names in your CSV are exactly 'Food Item' and 'Calories in kcal per 100g' (case-sensitive).")
     except Exception as e:
-        print(f"Error with 'latin-1' encoding, trying 'cp1252': {e}")
-        # If latin-1 fails, try cp1252
-        df = pd.read_csv(csv_path, encoding='cp1252')
-        print("CSV data loaded successfully with 'cp1252' encoding!")
-    print("First 5 rows of the DataFrame:")
-    print(df.head())
-    print("\nColumn names and data types:")
-    print(df.info())
-    print("\nColumns in the loaded DataFrame:")
-    print(df.columns.tolist())
+        calorie_data = pd.DataFrame() # Reset to empty on other errors
+        print(f"An unexpected error occurred during data loading: {e}")
 
-except FileNotFoundError:
-    print(f"Error: The file '{csv_file_name}' was not found at {csv_path}. Please make sure it is in the same directory as app.py.")
-    df = pd.DataFrame() # Create an empty DataFrame to avoid errors later
-except Exception as e:
-    print(f"An error occurred while reading the CSV file: {e}")
-    df = pd.DataFrame() # Create an empty DataFrame to avoid errors later
-
-
-# --- Define the calculation functions ---
-# You can copy these directly from your working notebook code
-
-def calculate_test_meal_glycemic_load(test_meal_df):
+# --- Helper function for meal analysis (adapted from notebook) ---
+def analyze_meal_data(meal_items, calorie_data_df):
     """
-    Calculates the estimated Glycemic Load (GL) for a test meal.
-
-    GL = (GI * Carbohydrate amount per serving) / 100
-    Carbohydrate amount per serving is calculated based on 'Available Carbohydrates per 100g (grams)'
-    and 'Quantity Used in gram'.
+    Analyzes a list of meal items (food item and quantity) and calculates
+    total calories for the meal and summary statistics for the selected
+    food items' calorie content per 100g.
 
     Args:
-        test_meal_df (pd.DataFrame): DataFrame containing food items in the test meal,
-                                      including 'Glycemic Index',
-                                      'Available Carbohydrate in gram per 100 gram',
-                                      and 'Quantity Used in gram'.
+        meal_items (list): A list of dictionaries, where each dictionary
+                           has 'food_item' (str) and 'quantity' (float in grams).
+        calorie_data_df (pd.DataFrame): The DataFrame containing calorie data.
 
     Returns:
-        float: The total Glycemic Load for the test meal, or None if input is invalid.
+        dict: A dictionary containing the calculated statistics.
     """
-    if test_meal_df is None or test_meal_df.empty:
-        print("Warning: Input DataFrame for GL calculation is empty or None.")
-        return None
+    if calorie_data_df.empty:
+        return {'error': 'Calorie data not loaded.'}
 
-    # Ensure required columns exist
-    # Updated column names to match the loaded DataFrame
-    gi_col = 'Glycemic Index'
-    carb_col = 'Available Carbohydrate in gram per 100 gram'
-    qty_col = 'Quantity Used in gram'
-    required_cols = [gi_col, carb_col, qty_col]
+    total_calories = 0
+    selected_food_items_list = [] # List to store food items present in the meal for summary stats
+    results = {} # Dictionary to store results
 
-    # Check for required columns case-insensitively if needed, but stick to exact match for now
-    if not all(col in test_meal_df.columns for col in required_cols):
-        # This error should ideally be caught before this function is called if merge is done correctly
-        print(f"Error: Missing one or more required columns for GL calculation: {required_cols}")
-        print(f"Available columns in input DataFrame: {test_meal_df.columns.tolist()}")
-        return None
+    for item in meal_items:
+        food_item_name = item.get('food_item')
+        quantity_grams = item.get('quantity', 0) # quantity in grams
 
-    # Convert relevant columns to numeric, coercing errors to NaN
-    # This is crucial for calculations and prevents TypeErrors if data isn't clean
-    for col in [gi_col, carb_col, qty_col]:
-         if col in test_meal_df.columns:
-            test_meal_df[col] = pd.to_numeric(test_meal_df[col], errors='coerce')
+        if food_item_name and quantity_grams > 0:
+            # Find the food item, case-insensitive match
+            calorie_row = calorie_data_df[calorie_data_df['food_item'].str.lower() == food_item_name.lower()]
 
-    # Drop rows where essential columns are NaN after coercion
-    test_meal_df.dropna(subset=[gi_col, carb_col, qty_col], inplace=True)
+            if not calorie_row.empty:
+                # Get calorie per gram for this food item
+                # Check if 'calories_per_g' column exists before accessing
+                if 'calories_per_g' in calorie_data_df.columns:
+                    energy_per_gram = calorie_row['calories_per_g'].iloc[0]
+                    # Calculate calories for the given quantity
+                    calories = quantity_grams * energy_per_gram
+                    total_calories += calories
+                    # Add the food item name to the list for summary stats
+                    selected_food_items_list.append(food_item_name)
+                    # Optional: print detailed calculation on the server side (visible in Render logs or terminal)
+                    print(f"Processed: {food_item_name} ({quantity_grams}g)")
+                else:
+                    print(f"Warning: 'calories_per_g' column not found. Cannot calculate calories for '{food_item_name}'.")
+            else:
+                print(f"Warning: Food item '{food_item_name}' not found in data.")
+        elif food_item_name:
+             print(f"Warning: Quantity for '{food_item_name}' is zero or missing. Skipping.")
+        else:
+            print(f"Warning: Invalid item format: {item}")
 
+    results['total_calories'] = total_calories
 
-    # Calculate carbohydrate amount per serving for each item
-    test_meal_df['Carbohydrate Amount (serving)'] = (test_meal_df[carb_col] / 100) * test_meal_df[qty_col]
+    # Calculate summary statistics for the unique food items included in the meal,
+    # based on their calories per 100g from the original data.
+    unique_selected_food_items = list(set(selected_food_items_list))
+    selected_data_for_stats = calorie_data_df[calorie_data_df['food_item'].isin(unique_selected_food_items)]
 
-    # Handle potential division by zero if qty_col is zero for all rows (unlikely but good practice)
-    test_meal_df.loc[test_meal_df[qty_col] == 0, 'Carbohydrate Amount (serving)'] = 0
+    if not selected_data_for_stats.empty and 'calories_per_100g' in selected_data_for_stats.columns:
+        results['total_calories_in_selected_food_items_per_100g_sum'] = selected_data_for_stats['calories_per_100g'].sum()
+        results['average_calories_per_100g'] = selected_data_for_stats['calories_per_100g'].mean()
+        results['median_calories_per_100g'] = selected_data_for_stats['calories_per_100g'].median()
+        results['min_calories_per_100g'] = selected_data_for_stats['calories_per_100g'].min()
+        results['max_calories_per_100g'] = selected_data_for_stats['calories_per_100g'].max()
+        # Check if there's more than one item to calculate std deviation
+        if len(selected_data_for_stats) > 1:
+            results['std_deviation_calories_per_100g'] = selected_data_for_stats['calories_per_100g'].std()
+        else:
+             results['std_deviation_calories_per_100g'] = None # Std dev is not meaningful for a single item
 
-
-    # Calculate GL for each item and sum them up
-    test_meal_df['Item GL'] = (test_meal_df[gi_col] * test_meal_df['Carbohydrate Amount (serving)']) / 100
-
-    total_glycemic_load = test_meal_df['Item GL'].sum()
-
-    # Handle potential NaN or infinite values after sum
-    if pd.isna(total_glycemic_load) or math.isinf(total_glycemic_load):
-         print("Warning: GL calculation resulted in NaN or infinite value. Check input data.")
-         return None
-
-    return total_glycemic_load
-
-def calculate_test_meal_glycemic_index(test_meal_df):
-    """
-    Calculates the estimated Glycemic Index (GI) for a test meal using a weighted average
-    based on the carbohydrate content of each item.
-
-    GI_meal = Sum(GI_item * Carbohydrate_item) / Sum(Carbohydrate_item)
-
-    Args:
-        test_meal_df (pd.DataFrame): DataFrame containing food items in the test meal,
-                                      including 'Glycemic Index',
-                                      'Available Carbohydrate in gram per 100 gram',
-                                      and 'Quantity Used in gram'.
-
-    Returns:
-        float: The estimated Glycemic Index for the test meal, or None if input is invalid
-               or total carbohydrates are zero.
-    """
-    if test_meal_df is None or test_meal_df.empty:
-        print("Warning: Input DataFrame for GI calculation is empty or None.")
-        return None
-
-    # Ensure required columns exist
-    # Updated column names to match the loaded DataFrame
-    gi_col = 'Glycemic Index'
-    carb_col = 'Available Carbohydrate in gram per 100 gram'
-    qty_col = 'Quantity Used in gram'
-    required_cols = [gi_col, carb_col, qty_col]
-
-    # Check for required columns case-insensitively if needed, but stick to exact match for now
-    if not all(col in test_meal_df.columns for col in required_cols):
-         # This error should ideally be caught before this function is called if merge is done correctly
-        print(f"Error: Missing one or more required columns for GI calculation: {required_cols}")
-        print(f"Available columns in input DataFrame: {test_meal_df.columns.tolist()}")
-        return None
-
-     # Convert relevant columns to numeric, coercing errors to NaN
-     # This is crucial for calculations and prevents TypeErrors if data isn't clean
-    for col in [gi_col, carb_col, qty_col]:
-         if col in test_meal_df.columns:
-            test_meal_df[col] = pd.to_numeric(test_meal_df[col], errors='coerce')
-
-    # Drop rows where essential columns are NaN after coercion
-    test_meal_df.dropna(subset=[gi_col, carb_col, qty_col], inplace=True)
-
-
-    # Calculate carbohydrate amount per serving for each item
-    test_meal_df['Carbohydrate Amount (serving)'] = (test_meal_df[carb_col] / 100) * test_meal_df[qty_col]
-
-     # Handle potential division by zero if qty_col is zero for all rows (unlikely but good practice)
-    test_meal_df.loc[test_meal_df[qty_col] == 0, 'Carbohydrate Amount (serving)'] = 0
-
-
-    # Calculate (GI * Carbohydrate) for each item
-    test_meal_df['GI * Carbohydrate'] = test_meal_df[gi_col] * test_meal_df['Carbohydrate Amount (serving)']
-
-    # Sum the weighted GI and total carbohydrates
-    sum_gi_times_carb = test_meal_df['GI * Carbohydrate'].sum()
-    total_carbohydrates = test_meal_df['Carbohydrate Amount (serving)'].sum()
-
-     # Handle potential NaN or infinite values before division
-    if pd.isna(sum_gi_times_carb) or math.isinf(sum_gi_times_carb) or pd.isna(total_carbohydrates) or math.isinf(total_carbohydrates):
-         print("Warning: GI calculation resulted in NaN or infinite values in intermediate steps. Check input data.")
-         return None
-
-
-    # Calculate weighted average GI, avoid division by zero
-    if total_carbohydrates > 0:
-        weighted_gi = sum_gi_times_carb / total_carbohydrates
-         # Handle potential NaN or infinite values after division
-        if pd.isna(weighted_gi) or math.isinf(weighted_gi):
-            print("Warning: GI calculation resulted in NaN or infinite value. Check input data or total carbohydrates.")
-            return None
-        return weighted_gi
+        n_top_bottom_selected = min(len(selected_data_for_stats), 5)
+        results['highest_calorie_foods_in_selection'] = selected_data_for_stats.nlargest(n_top_bottom_selected, 'calories_per_100g')[['food_item', 'calories_per_100g']].to_dict('records')
+        results['lowest_calorie_foods_in_selection'] = selected_data_for_stats.nsmallest(n_top_bottom_selected, 'calories_per_100g')[['food_item', 'calories_per_100g']].to_dict('records')
     else:
-        print("Warning: Total carbohydrates in the test meal are zero. Cannot calculate weighted GI.")
-        return None
+        # Initialize stats to None/0 if no items were found/selected for stats
+        results['total_calories_in_selected_food_items_per_100g_sum'] = 0
+        results['average_calories_per_100g'] = None
+        results['median_calories_per_100g'] = None
+        results['min_calories_per_100g'] = None
+        results['max_calories_per_100g'] = None
+        results['std_deviation_calories_per_100g'] = None
+        results['highest_calorie_foods_in_selection'] = []
+        results['lowest_calorie_foods_in_selection'] = []
+
+
+    return results
 
 
 # --- Flask Routes ---
 
 @app.route('/')
 def index():
-    # Get unique food items for the dropdown, ensuring df is not empty
-    food_items = df['Food Item'].unique().tolist() if not df.empty and 'Food Item' in df.columns else []
-    # Sort food items alphabetically for better usability
-    food_items.sort()
-    return render_template('index.html', food_items=food_items)
+    # Pass the list of food items to the template for a dropdown or list
+    food_items_list = calorie_data['food_item'].tolist() if not calorie_data.empty else []
+    return render_template('index.html', food_items=food_items_list)
 
-@app.route('/calculate', methods=['POST'])
-def calculate():
-    data = request.json # Get JSON data from the frontend
-
-    if not data or 'meal_items' not in data:
-        return jsonify({'error': 'Invalid input: Missing meal_items data.'}), 400
-
-    meal_items_list = data.get('meal_items', []) # Get the list, default to empty if not found
-
-    if not meal_items_list:
-        return jsonify({'message': 'Meal list is empty. Add items before calculating.'})
-
-    # Convert the list of dictionaries to a DataFrame
-    try:
-        meal_df_input = pd.DataFrame(meal_items_list)
-    except Exception as e:
-         return jsonify({'error': f'Invalid meal items data format: {e}'}), 400
-
-    # Ensure the main DataFrame is loaded and has the necessary columns before merging
-    if df.empty or not all(col in df.columns for col in ['Food Item', 'Glycemic Index', 'Available Carbohydrate in gram per 100 gram']):
-         return jsonify({'error': 'Application data (CSV) not loaded correctly.'}), 500
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    # This route handles the POST request from the frontend with meal items
+    meal_items = request.json.get('meal_items', [])
+    analysis_results = analyze_meal_data(meal_items, calorie_data)
+    return jsonify(analysis_results)
 
 
-    # Merge with the main DataFrame to get GI and Carb data
-    # Use 'left' merge to keep all items from the input list
-    meal_df_merged = pd.merge(meal_df_input, df[['Food Item', 'Glycemic Index', 'Available Carbohydrate in gram per 100 gram']], on='Food Item', how='left')
-
-    # Check if any items from the input list were not found in the main data
-    if meal_df_merged['Glycemic Index'].isnull().any() or meal_df_merged['Available Carbohydrate in gram per 100 gram'].isnull().any():
-         missing_items = meal_df_merged[meal_df_merged['Glycemic Index'].isnull()]['Food Item'].tolist()
-         return jsonify({'error': f'Could not find data for the following items: {", ".join(missing_items)}. Please check the item names.'}), 400
-
-    # Perform calculations
-    # Pass the merged DataFrame (which now includes GI and Carb data) to the calculation functions
-    glycemic_load = calculate_test_meal_glycemic_load(meal_df_merged.copy()) # Pass a copy to avoid modifying the merged_df in place within functions
-    glycemic_index = calculate_test_meal_glycemic_index(meal_df_merged.copy()) # Pass a copy
-
-
-    results = {}
-    if glycemic_load is not None:
-        results['glycemic_load'] = f"{glycemic_load:.2f}"
-    else:
-        results['glycemic_load_error'] = "Could not calculate Glycemic Load. Check data or input values."
-
-    if glycemic_index is not None:
-        # Classify GI (reuse your logic)
-        if glycemic_index <= 55:
-            gi_category = "Low"
-        elif 56 <= glycemic_index <= 69:
-            gi_category = "Medium"
-        else:
-            gi_category = "High"
-        results['glycemic_index'] = f"{glycemic_index:.2f}"
-        results['gi_category'] = gi_category
-    else:
-        results['glycemic_index_error'] = "Could not calculate Glycemic Index. Check data or input values."
-
-    # If there were issues in calculation functions but no merge errors, add a general warning
-    if not results.get('glycemic_load') and not results.get('glycemic_load_error'):
-         results['glycemic_load_error'] = "GL calculation returned None. Check data."
-    if not results.get('glycemic_index') and not results.get('glycemic_index_error'):
-         results['glycemic_index_error'] = "GI calculation returned None. Check data."
-
-
-    return jsonify(results)
-
-
-# Add a main block to run the app locally for testing
+# This block is for running the app locally during development.
+# Render.com uses a different method to start the application (usually gunicorn).
 if __name__ == '__main__':
-    # Make sure to put your CSV file in the same folder as app.py for this to work
-    # For Render deployment, gunicorn will handle starting the app, this block is for local testing
-    print("Running Flask app locally...")
-    # Set use_reloader=False to prevent restarts in interactive environments like notebooks
-    app.run(debug=True, use_reloader=False)
+    # In a production environment like Render, debug=False is recommended for security and performance.
+    # For local testing, you can use debug=True
+    # This command starts the web server and will "hang" the terminal until stopped.
+    app.run(debug=True, port=5002)
